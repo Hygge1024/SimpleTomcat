@@ -1,12 +1,31 @@
 package com.lt.jerrymous.engine;
 
+import com.lt.jerrymous.engine.mapping.FilterMapping;
 import com.lt.jerrymous.engine.mapping.ServletMapping;
 import com.lt.jerrymous.engine.utils.AnnoUtils;
 import jakarta.servlet.*;
+import jakarta.servlet.annotation.WebFilter;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.descriptor.JspConfigDescriptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.FilterRegistration;
+import jakarta.servlet.annotation.WebFilter;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.Servlet;
+import jakarta.servlet.ServletContext;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRegistration;
+import jakarta.servlet.SessionCookieConfig;
+import jakarta.servlet.SessionTrackingMode;
+import jakarta.servlet.descriptor.JspConfigDescriptor;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,20 +35,78 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.*;
 
-//用于管理 Servlet 的注册、初始化，以及请求的处理
 public class ServletContextImpl implements ServletContext {
+
     final Logger logger = LoggerFactory.getLogger(getClass());
 
     private Map<String, ServletRegistrationImpl> servletRegistrations = new HashMap<>();
+    private Map<String, FilterRegistrationImpl> filterRegistrations = new HashMap<>();
 
     final Map<String, Servlet> nameToServlets = new HashMap<>();
+    final Map<String, Filter> nameToFilters = new HashMap<>();
 
     final List<ServletMapping> servletMappings = new ArrayList<>();
+    final List<FilterMapping> filterMappings = new ArrayList<>();
 
-    public ServletContextImpl() {
+    public void initFilters(List<Class<?>> filterClasses) {
+        for (Class<?> c : filterClasses) {
+            WebFilter wf = c.getAnnotation(WebFilter.class);
+            if (wf != null) {
+                logger.info("auto register @WebFilter: {}", c.getName());
+                @SuppressWarnings("unchecked")
+                Class<? extends Filter> clazz = (Class<? extends Filter>) c;
+                FilterRegistration.Dynamic registration = this.addFilter(AnnoUtils.getFilterName(clazz), clazz);
+                registration.addMappingForUrlPatterns(EnumSet.of(DispatcherType.REQUEST), true, AnnoUtils.getFilterUrlPatterns(clazz));
+                registration.setInitParameters(AnnoUtils.getFilterInitParams(clazz));
+            }
+        }
+
+        // init filters:
+        for (String name : this.filterRegistrations.keySet()) {
+            var registration = this.filterRegistrations.get(name);
+            try {
+                registration.filter.init(registration.getFilterConfig());
+                this.nameToFilters.put(name, registration.filter);
+                for (String urlPattern : registration.getUrlPatternMappings()) {
+                    this.filterMappings.add(new FilterMapping(urlPattern, registration.filter));
+                }
+                registration.initialized = true;
+            } catch (ServletException e) {
+                logger.error("init filter failed: " + name + " / " + registration.filter.getClass().getName(), e);
+            }
+        }
     }
 
-    public void process(HttpServletRequestImpl request, HttpServletResponseImpl response) throws IOException, ServletException {
+    public void initServlets(List<Class<?>> servletClasses) {
+        for (Class<?> c : servletClasses) {
+            WebServlet ws = c.getAnnotation(WebServlet.class);
+            if (ws != null) {
+                logger.info("auto register @WebServlet: {}", c.getName());
+                @SuppressWarnings("unchecked")
+                Class<? extends Servlet> clazz = (Class<? extends Servlet>) c;
+                ServletRegistration.Dynamic registration = this.addServlet(AnnoUtils.getServletName(clazz), clazz);
+                registration.addMapping(AnnoUtils.getServletUrlPatterns(clazz));
+                registration.setInitParameters(AnnoUtils.getServletInitParams(clazz));
+            }
+        }
+
+        // init servlets:
+        for (String name : this.servletRegistrations.keySet()) {
+            var registration = this.servletRegistrations.get(name);
+            try {
+                registration.servlet.init(registration.getServletConfig());
+                this.nameToServlets.put(name, registration.servlet);
+                for (String urlPattern : registration.getMappings()) {
+                    this.servletMappings.add(new ServletMapping(urlPattern, registration.servlet));
+                }
+                registration.initialized = true;
+            } catch (ServletException e) {
+                logger.error("init servlet failed: " + name + " / " + registration.servlet.getClass().getName(), e);
+            }
+        }
+    }
+
+    public void process(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
         String path = request.getRequestURI();
         // search servlet:
         Servlet servlet = null;
@@ -46,52 +123,26 @@ public class ServletContextImpl implements ServletContext {
             pw.close();
             return;
         }
-        servlet.service(request, response);
-    }
-
-
-    public void initialize(List<Class<?>> servletClasses) {
-        //遍历提供的所有Servlet类
-        for (Class<?> c : servletClasses) {
-            //检查是否受用@WebServlet注解
-            WebServlet ws = c.getAnnotation(WebServlet.class);
-            if (ws != null) { //如果类被@WebServlet注解标记
-                //打印其日志信息
-                logger.info("auto register @WebServlet: {}", c.getName());
-                //抑制检查的类型转换警告，并将类转换为Servlet的子类
-                @SuppressWarnings("unchecked")
-                Class<? extends Servlet> clazz = (Class<? extends Servlet>) c;
-                //使用注解工具类获取Servlet的名称并将其注册到ServletContext中
-                ServletRegistration.Dynamic registration = this.addServlet(AnnoUtils.getServletName(clazz), clazz);
-                //设置Servlet的URL映射（即Servlet处理的请求路径）
-                registration.addMapping(AnnoUtils.getServletUrlPatterns(clazz));
-                //设置Servlet的初始化参数
-                registration.setInitParameters(AnnoUtils.getServletInitParams(clazz));
+        // search filter:
+        List<Filter> enabledFilters = new ArrayList<>();
+        for (FilterMapping mapping : this.filterMappings) {
+            if (mapping.matches(path)) {
+                enabledFilters.add(mapping.filter);
             }
         }
-
-        // 初始化所有已注册的Servlet
-        for (String name : this.servletRegistrations.keySet()) {
-//            获取当前Servlet的注册信息
-            var registration = this.servletRegistrations.get(name);
-            try {
-//                 调用Servlet的init方法进行初始化
-                registration.servlet.init(registration.getServletConfig());
-                //存储起来
-                this.nameToServlets.put(name, registration.servlet);
-                // 遍历Servlet的URL映射并将其添加到servletMappings列表中
-                for (String urlPattern : registration.getMappings()) {
-                    this.servletMappings.add(new ServletMapping(urlPattern, registration.servlet));
-                }
-                // 标记Servlet已经初始化
-                registration.initialized = true;
-            } catch (ServletException e) {
-                // 如果Servlet初始化失败，记录错误日志
-                logger.error("init servlet failed: " + name + " / " + registration.servlet.getClass().getName(), e);
-            }
+        Filter[] filters = enabledFilters.toArray(Filter[]::new);
+        logger.atDebug().log("process {} by filter {}, servlet {}", path, Arrays.toString(filters), servlet);
+        FilterChain chain = new FilterChainImpl(filters, servlet);
+        try {
+            chain.doFilter(request, response);
+            System.out.println("doFilter已经结束了");
+        } catch (ServletException e) {
+            logger.error(e.getMessage(), e);
+            throw new IOException(e);
+        } catch (IOException e) {
+            logger.error(e.getMessage(), e);
+            throw e;
         }
-        // 排序Servlet映射，以确保请求匹配时的顺序正确
-        Collections.sort(this.servletMappings);
     }
 
     @Override
@@ -195,6 +246,63 @@ public class ServletContextImpl implements ServletContext {
         return Map.copyOf(this.servletRegistrations);
     }
 
+    @Override
+    public FilterRegistration.Dynamic addFilter(String name, String className) {
+        if (className == null || className.isEmpty()) {
+            throw new IllegalArgumentException("class name is null or empty.");
+        }
+        Filter filter = null;
+        try {
+            Class<? extends Filter> clazz = createInstance(className);
+            filter = createInstance(clazz);
+        } catch (ServletException e) {
+            throw new RuntimeException(e);
+        }
+        return addFilter(name, filter);
+    }
+
+    @Override
+    public FilterRegistration.Dynamic addFilter(String name, Class<? extends Filter> clazz) {
+        if (clazz == null) {
+            throw new IllegalArgumentException("class is null.");
+        }
+        Filter filter = null;
+        try {
+            filter = createInstance(clazz);
+        } catch (ServletException e) {
+            throw new RuntimeException(e);
+        }
+        return addFilter(name, filter);
+    }
+
+    @Override
+    public FilterRegistration.Dynamic addFilter(String name, Filter filter) {
+        if (name == null) {
+            throw new IllegalArgumentException("name is null.");
+        }
+        if (filter == null) {
+            throw new IllegalArgumentException("filter is null.");
+        }
+        var registration = new FilterRegistrationImpl(this, name, filter);
+        this.filterRegistrations.put(name, registration);
+        return registration;
+    }
+
+    @Override
+    public <T extends Filter> T createFilter(Class<T> clazz) throws ServletException {
+        return createInstance(clazz);
+    }
+
+    @Override
+    public FilterRegistration getFilterRegistration(String name) {
+        return this.filterRegistrations.get(name);
+    }
+
+    @Override
+    public Map<String, ? extends FilterRegistration> getFilterRegistrations() {
+        return Map.copyOf(this.filterRegistrations);
+    }
+
     // Servlet API version: 6.0.0
 
     @Override
@@ -294,42 +402,6 @@ public class ServletContextImpl implements ServletContext {
 
     @Override
     public String getServletContextName() {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public FilterRegistration.Dynamic addFilter(String filterName, String className) {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public FilterRegistration.Dynamic addFilter(String filterName, Filter filter) {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public FilterRegistration.Dynamic addFilter(String filterName, Class<? extends Filter> filterClass) {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public <T extends Filter> T createFilter(Class<T> clazz) throws ServletException {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public FilterRegistration getFilterRegistration(String filterName) {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public Map<String, ? extends FilterRegistration> getFilterRegistrations() {
         // TODO Auto-generated method stub
         return null;
     }
