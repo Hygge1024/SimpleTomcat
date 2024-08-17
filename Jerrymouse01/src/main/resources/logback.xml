@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--定义文档的类型为Logback配置文件-->
+<!DOCTYPE configuration>
+
+<configuration>
+<!--    用于定义日志的格式-->
+    <import class="ch.qos.logback.classic.encoder.PatternLayoutEncoder" />
+<!--    用于将日志输出到控制台-->
+    <import class="ch.qos.logback.core.ConsoleAppender" />
+
+<!--    定义控制台输出的Appender-->
+<!--    定义一个日志输出的目的地——STDOUT“名”的控制台输出 ， ConsoleAppender类：控制台-->
+    <appender name="STDOUT" class="ConsoleAppender">
+<!--        定义日志的编码器，用于指定日志消息的格式-->
+        <encoder class="PatternLayoutEncoder">
+<!--            定义消息格式-->
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} -%kvp- %msg%n</pattern>
+        </encoder>
+    </appender>
+<!--    定义日志的根级别-->
+    <root>
+        <appender-ref ref="STDOUT" />
+    </root>
+</configuration>
