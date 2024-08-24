@@ -3,10 +3,13 @@ package com.lt.jerrymous.connector;
 import com.lt.jerrymous.engine.HttpServletRequestImpl;
 import com.lt.jerrymous.engine.HttpServletResponseImpl;
 import com.lt.jerrymous.engine.ServletContextImpl;
-import com.lt.jerrymous.engine.filter.HelloFilter;
+//import com.lt.jerrymous.engine.filter.HelloFilter;
 import com.lt.jerrymous.engine.filter.LogFilter;
+import com.lt.jerrymous.engine.listener.*;
 import com.lt.jerrymous.engine.servlet.HelloServlet;
 import com.lt.jerrymous.engine.servlet.IndexServlet;
+import com.lt.jerrymous.engine.servlet.LoginServlet;
+import com.lt.jerrymous.engine.servlet.LogoutServlet;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -17,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.EventListener;
 import java.util.List;
 
 /**
@@ -35,8 +39,14 @@ public class HttpConnector implements HttpHandler, AutoCloseable {
 
     public HttpConnector() throws IOException {
         this.servletContext = new ServletContextImpl();
-        this.servletContext.initServlets(List.of(IndexServlet.class, HelloServlet.class));
-        this.servletContext.initFilters(List.of(LogFilter.class, HelloFilter.class));
+        this.servletContext.initServlets(List.of(IndexServlet.class, LoginServlet.class, LogoutServlet.class, HelloServlet.class));
+        this.servletContext.initFilters(List.of(LogFilter.class));
+        List<Class<? extends EventListener>> listenerClasses = List.of(HelloHttpSessionAttributeListener.class, HelloHttpSessionListener.class,
+                HelloServletContextAttributeListener.class, HelloServletContextListener.class, HelloServletRequestAttributeListener.class,
+                HelloServletRequestListener.class);
+        for (Class<? extends EventListener> listenerClass : listenerClasses) {
+            this.servletContext.addListener(listenerClass);
+        }
         // start http server:
         String host = "0.0.0.0";
         int port = 8080;
@@ -53,13 +63,15 @@ public class HttpConnector implements HttpHandler, AutoCloseable {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         var adapter = new HttpExchangeAdapter(exchange);
-        var request = new HttpServletRequestImpl(adapter);
         var response = new HttpServletResponseImpl(adapter);
+        var request = new HttpServletRequestImpl(this.servletContext, adapter, response);
         // process:
         try {
             this.servletContext.process(request, response);
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
+        } finally {
+            response.cleanup();
         }
     }
 }

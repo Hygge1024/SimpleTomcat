@@ -21,11 +21,15 @@ import java.util.regex.Pattern;
  */
 
 public class HttpServletRequestImpl implements HttpServletRequest {
+    final ServletContextImpl servletContext;
 
     final HttpExchangeRequest exchangeRequest;
+    final HttpServletResponse response;
 
-    public HttpServletRequestImpl(HttpExchangeRequest exchangeRequest) {
+    public HttpServletRequestImpl(ServletContextImpl servletContext,HttpExchangeRequest exchangeRequest,HttpServletResponse response) {
         this.exchangeRequest = exchangeRequest;
+        this.servletContext = servletContext;
+        this.response = response;
     }
 
     @Override
@@ -64,7 +68,37 @@ public class HttpServletRequestImpl implements HttpServletRequest {
         }
         return map;
     }
+    @Override
+    public HttpSession getSession(boolean create) {
+        String sessionId = null;
+        Cookie[] cookies = getCookies();
+        if (cookies != null) {
+            for (Cookie cookie : cookies) {
+                if ("JSESSIONID".equals(cookie.getName())) {
+                    sessionId = cookie.getValue();
+                    break;
+                }
+            }
+        }
+        if (sessionId == null && !create) {
+            return null;
+        }
+        if (sessionId == null) {
+            if (this.response.isCommitted()) {
+                throw new IllegalStateException("Cannot create session for response is commited.");
+            }
+            sessionId = UUID.randomUUID().toString();
+            // set cookie:
+            String cookieValue = "JSESSIONID=" + sessionId + "; Path=/; SameSite=Strict; HttpOnly";
+            this.response.addHeader("Set-Cookie", cookieValue);
+        }
+        return this.servletContext.sessionManager.getSession(sessionId);
+    }
 
+    @Override
+    public HttpSession getSession() {
+        return getSession(true);
+    }
     // not implemented yet:
 
     @Override
@@ -393,19 +427,6 @@ public class HttpServletRequestImpl implements HttpServletRequest {
         // TODO Auto-generated method stub
         return null;
     }
-
-    @Override
-    public HttpSession getSession(boolean create) {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
-    @Override
-    public HttpSession getSession() {
-        // TODO Auto-generated method stub
-        return null;
-    }
-
     @Override
     public String changeSessionId() {
         // TODO Auto-generated method stub
